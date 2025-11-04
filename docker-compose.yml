@@ -1,0 +1,214 @@
+# services:
+#   # PostgreSQL Database
+#   postgres:
+#     image: postgres:15-alpine
+#     container_name: taxplanner_postgres
+#     environment:
+#       POSTGRES_DB: tax_planning
+#       POSTGRES_USER: taxuser
+#       POSTGRES_PASSWORD: taxpassword
+#     ports:
+#       - "5432:5432"
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#     networks:
+#       - taxplanner_network
+
+#   # Redis Cache
+#   redis:
+#     image: redis:7-alpine
+#     container_name: taxplanner_redis
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - redis_data:/data
+#     networks:
+#       - taxplanner_network
+
+#   # PDF Extraction Service
+#   pdf-extraction:
+#     build:
+#       context: ./services/pdf-extraction-service
+#     container_name: pdf_extraction_service
+#     environment:
+#       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+#     ports:
+#       - "8000:8000"
+#     networks:
+#       - taxplanner_network
+#     depends_on:
+#       - redis
+
+#   # Tax Planning Service
+#   tax-planning:
+#     build:
+#       context: ./services/tax-planning-service
+#     container_name: tax_planning_service
+#     environment:
+#       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+#       - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+#       - REDIS_URL=redis://redis:6379/0
+#     ports:
+#       - "8001:8001"
+#     networks:
+#       - taxplanner_network
+#     depends_on:
+#       - postgres
+#       - redis
+
+#   # Tax Data Service
+#   tax-data:
+#     build:
+#       context: ./services/tax-data-service
+#     container_name: tax_data_service
+#     environment:
+#       - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+#     ports:
+#       - "8002:8002"
+#     networks:
+#       - taxplanner_network
+#     depends_on:
+#       - postgres
+
+# networks:
+#   taxplanner_network:
+#     driver: bridge
+
+# volumes:
+#   postgres_data:
+#   redis_data:
+
+
+version: "3.9"
+
+services:
+  # # =========================
+  # # ⚡ Redis Cache
+  # # =========================
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: taxplanner_redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   networks:
+  #     - taxplanner_network
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  # =========================
+  # 🍃 MongoDB
+  # =========================
+  mongo:
+    image: mongo:7
+    container_name: taxplanner_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - taxplanner_network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ ping: 1 })' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 📄 PDF Extraction Service
+  # =========================
+  pdf-extraction:
+    build:
+      context: ./services/pdf-extraction-service
+    container_name: pdf_extraction_service
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    networks:
+      - taxplanner_network
+    # depends_on:
+    #   redis:
+    #     condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 🧮 Tax Planning Service
+  # =========================
+  tax-planning:
+    build:
+      context: ./services/tax-planning-service
+    container_name: tax_planning_service
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+      # - REDIS_URL=redis://redis:6379/0
+      - MONGO_URL=mongodb://mongo:27017/tax_planning_db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8001:8001"
+    networks:
+      - taxplanner_network
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/api/v1/planning/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 📊 Tax Data Service
+  # =========================
+  tax-data:
+    build:
+      context: ./services/tax-data-service
+    container_name: tax_data_service
+    environment:
+      # - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+      - MONGO_URL=mongodb://mongo:27017/tax_planning_db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8002:8002"
+    networks:
+      - taxplanner_network
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# =========================
+# 🌐 Network + Volumes
+# =========================
+networks:
+  taxplanner_network:
+    driver: bridge
+
+volumes:
+  # postgres_data:
+  # redis_data:
+  mongo_data:

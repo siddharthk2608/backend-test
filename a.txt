@@ -1,0 +1,2039 @@
+
+docker-compose.yml
+
+version: "3.9"
+
+services:
+  # # =========================
+  # # ⚡ Redis Cache
+  # # =========================
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: taxplanner_redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   networks:
+  #     - taxplanner_network
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  # =========================
+  # 🍃 MongoDB
+  # =========================
+  mongo:
+    image: mongo:7
+    container_name: taxplanner_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - taxplanner_network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ ping: 1 })' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 📄 PDF Extraction Service
+  # =========================
+  pdf-extraction:
+    build:
+      context: ./services/pdf-extraction-service
+    container_name: pdf_extraction_service
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    networks:
+      - taxplanner_network
+    # depends_on:
+    #   redis:
+    #     condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 🧮 Tax Planning Service
+  # =========================
+  tax-planning:
+    build:
+      context: ./services/tax-planning-service
+    container_name: tax_planning_service
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+      # - REDIS_URL=redis://redis:6379/0
+      - MONGO_URL=mongodb://mongo:27017/tax_planning_db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8001:8001"
+    networks:
+      - taxplanner_network
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/api/v1/planning/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # 📊 Tax Data Service
+  # =========================
+  tax-data:
+    build:
+      context: ./services/tax-data-service
+    container_name: tax_data_service
+    environment:
+      # - DATABASE_URL=postgresql://taxuser:taxpassword@postgres:5432/tax_planning
+      - MONGO_URL=mongodb://mongo:27017/tax_planning_db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8002:8002"
+    networks:
+      - taxplanner_network
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# =========================
+# 🌐 Network + Volumes
+# =========================
+networks:
+  taxplanner_network:
+    driver: bridge
+
+volumes:
+  # postgres_data:
+  # redis_data:
+  mongo_data:
+
+
+services/tax-data-service/Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8002
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002”]
+
+
+services/tax-planning-service/Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8001
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+
+
+services/tax-data-service/main.py
+# tax-data-service/main.py
+"""
+Tax Data Service - MongoDB CRUD operations for tax returns
+"""
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from shared.database import Database
+from shared.db_models import (
+    TaxReturnDocument,
+    TaxAnalysisDocument,
+    UserDocument,
+    model_to_dict,
+    dict_to_model
+)
+
+# Import logging configuration
+from logging_config import setup_logger, get_logger
+
+# Setup logger
+logger = setup_logger(
+    service_name="tax-data",
+    log_level="INFO"
+)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Tax Data Service",
+    description="CRUD operations for tax returns and analyses",
+    version="1.0.0"
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ==================== STARTUP/SHUTDOWN ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database connection on startup"""
+    logger.info("Starting up Tax Data Service...")
+    await Database.connect_db()
+    logger.info("Database connected successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connection on shutdown"""
+    logger.info("Shutting down Tax Data Service...")
+    await Database.close_db()
+    logger.info("Database connection closed")
+
+
+# ==================== REQUEST/RESPONSE MODELS ====================
+
+class TaxReturnCreate(BaseModel):
+    """Request model for creating a tax return"""
+    user_id: str
+    tax_year: int
+    personal_info: Dict[str, Any]
+    income: Dict[str, Any]
+    deductions: Optional[Dict[str, Any]] = None
+    credits: Optional[Dict[str, Any]] = None
+    dependents: Optional[List[Dict[str, Any]]] = None
+    source: str = "web_form"
+
+
+class TaxReturnUpdate(BaseModel):
+    """Request model for updating a tax return"""
+    personal_info: Optional[Dict[str, Any]] = None
+    income: Optional[Dict[str, Any]] = None
+    deductions: Optional[Dict[str, Any]] = None
+    credits: Optional[Dict[str, Any]] = None
+    dependents: Optional[List[Dict[str, Any]]] = None
+    status: Optional[str] = None
+
+
+class TaxReturnResponse(BaseModel):
+    """Response model for tax return"""
+    id: str
+    user_id: str
+    tax_year: int
+    created_at: datetime
+    updated_at: datetime
+    personal_info: Dict[str, Any]
+    income: Dict[str, Any]
+    deductions: Optional[Dict[str, Any]] = None
+    credits: Optional[Dict[str, Any]] = None
+    dependents: Optional[List[Dict[str, Any]]] = None
+    source: str
+    status: str
+
+
+class AnalysisListResponse(BaseModel):
+    """Response model for list of analyses"""
+    id: str
+    user_id: str
+    tax_year: int
+    analysis_date: datetime
+    total_potential_savings: float
+    num_recommendations: int
+
+
+# ==================== TAX RETURNS ENDPOINTS ====================
+
+@app.post("/api/v1/tax-returns", response_model=TaxReturnResponse)
+async def create_tax_return(tax_return: TaxReturnCreate):
+    """Create a new tax return"""
+    try:
+        logger.info(f"Creating tax return for user {tax_return.user_id}, year {tax_return.tax_year}")
+        
+        db = Database.get_database()
+        
+        # Create document
+        doc = TaxReturnDocument(
+            user_id=tax_return.user_id,
+            tax_year=tax_return.tax_year,
+            personal_info=tax_return.personal_info,
+            income=tax_return.income,
+            deductions=tax_return.deductions,
+            credits=tax_return.credits,
+            dependents=tax_return.dependents,
+            source=tax_return.source
+        )
+        
+        # Insert into database
+        result = await db.tax_returns.insert_one(model_to_dict(doc))
+        
+        # Fetch the created document
+        created_doc = await db.tax_returns.find_one({"_id": result.inserted_id})
+        
+        logger.info(f"Tax return created with ID: {result.inserted_id}")
+        
+        return TaxReturnResponse(
+            id=str(created_doc["_id"]),
+            **{k: v for k, v in created_doc.items() if k != "_id"}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating tax return: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/tax-returns/{return_id}", response_model=TaxReturnResponse)
+async def get_tax_return(return_id: str):
+    """Get a tax return by ID"""
+    try:
+        from bson import ObjectId
+        
+        db = Database.get_database()
+        doc = await db.tax_returns.find_one({"_id": ObjectId(return_id)})
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Tax return not found")
+        
+        logger.info(f"Retrieved tax return: {return_id}")
+        
+        return TaxReturnResponse(
+            id=str(doc["_id"]),
+            **{k: v for k, v in doc.items() if k != "_id"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving tax return: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/tax-returns/user/{user_id}", response_model=List[TaxReturnResponse])
+async def get_user_tax_returns(
+    user_id: str,
+    tax_year: Optional[int] = None,
+    limit: int = Query(10, ge=1, le=100)
+):
+    """Get all tax returns for a user"""
+    try:
+        db = Database.get_database()
+        
+        # Build query
+        query = {"user_id": user_id}
+        if tax_year:
+            query["tax_year"] = tax_year
+        
+        # Fetch documents
+        cursor = db.tax_returns.find(query).sort("created_at", -1).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        
+        logger.info(f"Retrieved {len(docs)} tax returns for user {user_id}")
+        
+        return [
+            TaxReturnResponse(
+                id=str(doc["_id"]),
+                **{k: v for k, v in doc.items() if k != "_id"}
+            )
+            for doc in docs
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error retrieving tax returns: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/tax-returns/{return_id}", response_model=TaxReturnResponse)
+async def update_tax_return(return_id: str, update: TaxReturnUpdate):
+    """Update a tax return"""
+    try:
+        from bson import ObjectId
+        
+        db = Database.get_database()
+        
+        # Build update document
+        update_doc = {"updated_at": datetime.utcnow()}
+        if update.personal_info:
+            update_doc["personal_info"] = update.personal_info
+        if update.income:
+            update_doc["income"] = update.income
+        if update.deductions:
+            update_doc["deductions"] = update.deductions
+        if update.credits:
+            update_doc["credits"] = update.credits
+        if update.dependents is not None:
+            update_doc["dependents"] = update.dependents
+        if update.status:
+            update_doc["status"] = update.status
+        
+        # Update document
+        result = await db.tax_returns.update_one(
+            {"_id": ObjectId(return_id)},
+            {"$set": update_doc}
+        )
+        
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Tax return not found")
+        
+        # Fetch updated document
+        updated_doc = await db.tax_returns.find_one({"_id": ObjectId(return_id)})
+        
+        logger.info(f"Updated tax return: {return_id}")
+        
+        return TaxReturnResponse(
+            id=str(updated_doc["_id"]),
+            **{k: v for k, v in updated_doc.items() if k != "_id"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating tax return: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/tax-returns/{return_id}")
+async def delete_tax_return(return_id: str):
+    """Delete a tax return"""
+    try:
+        from bson import ObjectId
+        
+        db = Database.get_database()
+        result = await db.tax_returns.delete_one({"_id": ObjectId(return_id)})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Tax return not found")
+        
+        logger.info(f"Deleted tax return: {return_id}")
+        
+        return {"message": "Tax return deleted successfully", "id": return_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting tax return: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== ANALYSES ENDPOINTS ====================
+
+@app.get("/api/v1/analyses/user/{user_id}", response_model=List[AnalysisListResponse])
+async def get_user_analyses(
+    user_id: str,
+    tax_year: Optional[int] = None,
+    limit: int = Query(10, ge=1, le=100)
+):
+    """Get all analyses for a user"""
+    try:
+        db = Database.get_database()
+        
+        # Build query
+        query = {"user_id": user_id}
+        if tax_year:
+            query["tax_year"] = tax_year
+        
+        # Fetch documents
+        cursor = db.tax_analyses.find(query).sort("analysis_date", -1).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        
+        logger.info(f"Retrieved {len(docs)} analyses for user {user_id}")
+        
+        return [
+            AnalysisListResponse(
+                id=str(doc["_id"]),
+                user_id=doc["user_id"],
+                tax_year=doc["tax_year"],
+                analysis_date=doc["analysis_date"],
+                total_potential_savings=doc["processing_metadata"]["total_potential_savings"],
+                num_recommendations=len(doc["recommendations"])
+            )
+            for doc in docs
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error retrieving analyses: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/analyses/{analysis_id}")
+async def get_analysis(analysis_id: str):
+    """Get a complete analysis by ID"""
+    try:
+        from bson import ObjectId
+        
+        db = Database.get_database()
+        doc = await db.tax_analyses.find_one({"_id": ObjectId(analysis_id)})
+        
+        if not doc:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+        
+        logger.info(f"Retrieved analysis: {analysis_id}")
+        
+        # Convert ObjectId to string
+        doc["_id"] = str(doc["_id"])
+        if doc.get("tax_return_id"):
+            doc["tax_return_id"] = str(doc["tax_return_id"])
+        
+        return doc
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== HEALTH CHECK ====================
+
+@app.get("/api/v1/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Test database connection
+        db = Database.get_database()
+        await db.command("ping")
+        
+        return {
+            "status": "healthy",
+            "service": "tax-data",
+            "version": "1.0.0",
+            "database": "connected",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "tax-data",
+            "database": "disconnected",
+            "error": str(e)
+        }
+
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "service": "Tax Data Service",
+        "version": "1.0.0",
+        "database": "MongoDB",
+        "endpoints": {
+            "create_tax_return": "POST /api/v1/tax-returns",
+            "get_tax_return": "GET /api/v1/tax-returns/{id}",
+            "get_user_returns": "GET /api/v1/tax-returns/user/{user_id}",
+            "update_tax_return": "PUT /api/v1/tax-returns/{id}",
+            "delete_tax_return": "DELETE /api/v1/tax-returns/{id}",
+            "get_user_analyses": "GET /api/v1/analyses/user/{user_id}",
+            "get_analysis": "GET /api/v1/analyses/{id}",
+            "health": "GET /api/v1/health",
+            "docs": "/docs"
+        }
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Tax Data Service on port 8002...")
+    uvicorn.run(app, host="0.0.0.0", port=8002)
+
+
+services/tax-planning-service/main.py
+# tax_planning_service/main.py
+"""
+AI-Driven Tax Planning Service with Gemini Flash 2.5
+Analyzes tax data and provides personalized recommendations
+"""
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+from decimal import Decimal
+import json
+import google.generativeai as genai
+
+# Import logging configuration
+import sys
+from pathlib import Path
+from typing import Optional
+
+sys.path.append(str(Path(__file__).parent.parent))
+
+from shared.database import Database
+from shared.db_models import TaxAnalysisDocument, model_to_dict
+
+from logging_config import setup_logger, get_logger
+
+
+
+# Setup logger
+logger = setup_logger(
+    service_name="tax-planning",
+    log_level="INFO"
+)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="AI-Driven Tax Planning Service (Gemini Flash 2.5)",
+    description="Microservice for tax planning analysis and recommendations using Gemini",
+    version="1.0.0"
+)
+
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==================== DATABASE CONNECTION ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database connection on startup"""
+    logger.info("Starting up Tax Planning Service...")
+    await Database.connect_db()
+    logger.info("Database connected successfully")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connection on shutdown"""
+    logger.info("Shutting down Tax Planning Service...")
+    await Database.close_db()
+    logger.info("Database connection closed")
+
+
+# Configure Gemini API - REPLACE WITH YOUR API KEY
+genai.configure(api_key='AIzaSyBrCDaECvgQLeju542GD7SBOnPzG3abU6k')
+
+# Initialize Gemini model
+gemini_model = genai.GenerativeModel(
+    model_name='gemini-2.0-flash-exp',
+    generation_config={
+        'temperature': 0.3,
+        'top_p': 0.95,
+        'top_k': 40,
+        'max_output_tokens': 8192,
+    }
+)
+
+
+# ==================== MODELS ====================
+
+class PersonalInfo(BaseModel):
+    first_name: str
+    last_name: str
+    date_of_birth: str
+    ssn: str
+    occupation: str
+    marital_status: str
+    street_address: str
+    city: str
+    zip_code: str
+
+
+class Income(BaseModel):
+    wages_current_year: float
+    wages_next_year: float
+    business_net_profit: float
+    business_gross_revenue: float
+
+
+class HomeOffice(BaseModel):
+    home_square_footage: int
+    office_square_footage: int
+    works_from_home: bool
+
+
+class WOTC(BaseModel):
+    group1: int = 0  # Qualified Veteran (<1 year)
+    group2: int = 0  # Qualified Veteran (unemployed 4-6 months)
+    group3: int = 0  # Qualified Veteran (unemployed 6+ months)
+    group4: int = 0  # Qualified Veteran with disability (6+ months)
+    group5: int = 0  # Summer Youth
+    group6: int = 0  # Long-Term Family Assistance
+
+
+class Deductions(BaseModel):
+    home_office: Optional[HomeOffice] = None
+
+
+class Credits(BaseModel):
+    wotc: Optional[WOTC] = None
+
+
+class Dependents(BaseModel):
+    has_children: bool
+    num_dependents: int = 0
+
+
+class TaxData(BaseModel):
+    personal_info: PersonalInfo
+    income: Income
+    deductions: Optional[Deductions] = None
+    credits: Optional[Credits] = None
+    dependents: Optional[Dependents] = None
+
+
+class AnalysisOptions(BaseModel):
+    include_scenarios: bool = True
+    optimization_level: str = "moderate"  # conservative, moderate, aggressive
+    projection_years: int = 1
+
+
+class TaxAnalysisRequest(BaseModel):
+    user_id: str
+    tax_year: int
+    tax_data: TaxData
+    options: AnalysisOptions = AnalysisOptions()
+
+
+class Recommendation(BaseModel):
+    id: str
+    title: str
+    description: str
+    potential_savings: float
+    priority: str  # high, medium, low
+    category: str
+    action_items: List[str]
+    deadline: Optional[str] = None
+    confidence: float
+
+
+class TaxScenario(BaseModel):
+    name: str
+    description: str
+    tax_liability: float
+    effective_rate: float
+    changes: List[str]
+    savings: Optional[float] = None
+
+
+class AIInsights(BaseModel):
+    key_findings: List[str]
+    risks: List[str]
+    opportunities: List[str]
+
+
+class TaxSummary(BaseModel):
+    total_income: float
+    total_deductions: float
+    total_credits: float
+    taxable_income: float
+    total_tax_liability: float
+    effective_tax_rate: float
+
+
+class QuarterlyEstimates(BaseModel):
+    q1: float
+    q2: float
+    q3: float
+    q4: float
+    total: float
+
+
+class ProcessingMetadata(BaseModel):
+    processing_time_seconds: float
+    ai_model: str
+    optimization_level: str
+    total_potential_savings: float
+
+
+class TaxAnalysisResponse(BaseModel):
+    success: bool
+    user_id: str
+    tax_year: int
+    summary: TaxSummary
+    recommendations: List[Recommendation]
+    scenarios: List[TaxScenario]
+    ai_insights: AIInsights
+    quarterly_estimates: QuarterlyEstimates
+    processing_metadata: ProcessingMetadata
+    timestamp: str
+
+
+# ==================== TAX CALCULATION FUNCTIONS ====================
+
+def calculate_federal_tax(taxable_income: float, filing_status: str = "single") -> float:
+    """Calculate federal income tax based on 2024 tax brackets"""
+    if filing_status == "single":
+        brackets = [
+            (11600, 0.10),
+            (47150, 0.12),
+            (100525, 0.22),
+            (191950, 0.24),
+            (243725, 0.32),
+            (609350, 0.35),
+            (float('inf'), 0.37)
+        ]
+    else:  # married_joint
+        brackets = [
+            (23200, 0.10),
+            (94300, 0.12),
+            (201050, 0.22),
+            (383900, 0.24),
+            (487450, 0.32),
+            (731200, 0.35),
+            (float('inf'), 0.37)
+        ]
+    
+    tax = 0
+    previous_limit = 0
+    
+    for limit, rate in brackets:
+        if taxable_income <= previous_limit:
+            break
+        
+        taxable_in_bracket = min(taxable_income, limit) - previous_limit
+        tax += taxable_in_bracket * rate
+        previous_limit = limit
+        
+        if taxable_income <= limit:
+            break
+    
+    return tax
+
+
+def calculate_self_employment_tax(net_profit: float) -> float:
+    """Calculate self-employment tax (15.3%)"""
+    if net_profit <= 0:
+        return 0
+    
+    se_income = net_profit * 0.9235
+    ss_limit = 160200
+    ss_tax = min(se_income, ss_limit) * 0.124
+    medicare_tax = se_income * 0.029
+    
+    if se_income > 200000:
+        medicare_tax += (se_income - 200000) * 0.009
+    
+    return ss_tax + medicare_tax
+
+
+def calculate_home_office_deduction(home_sqft: int, office_sqft: int, business_use_percentage: float = 1.0) -> tuple:
+    """Calculate home office deduction using both methods"""
+    simplified = min(office_sqft, 300) * 5
+    
+    if home_sqft > 0:
+        percentage = (office_sqft / home_sqft) * business_use_percentage
+        annual_home_expenses = 18000
+        actual = annual_home_expenses * percentage
+    else:
+        actual = 0
+    
+    return simplified, actual
+
+
+def calculate_wotc_credit(wotc_data: WOTC) -> float:
+    """Calculate Work Opportunity Tax Credit"""
+    credit = 0
+    credit += wotc_data.group1 * 2400
+    credit += wotc_data.group2 * 4800
+    credit += wotc_data.group3 * 5600
+    credit += wotc_data.group4 * 9600
+    credit += wotc_data.group5 * 1200
+    credit += wotc_data.group6 * 9000
+    return credit
+
+
+def calculate_child_tax_credit(num_children: int, income: float) -> float:
+    """Calculate Child Tax Credit (2024)"""
+    if num_children == 0:
+        return 0
+    
+    base_credit = 2000 * num_children
+    
+    if income > 400000:
+        reduction = ((income - 400000) // 1000) * 50
+        return max(0, base_credit - reduction)
+    
+    return base_credit
+
+
+# ==================== AI ANALYSIS FUNCTIONS ====================
+
+def generate_ai_recommendations(tax_data: TaxData, tax_summary: TaxSummary) -> tuple:
+    """Use Gemini to generate personalized tax recommendations"""
+    logger.info("Generating AI recommendations with Gemini Flash 2.5...")
+    
+    input_text = f"""You are a tax planning expert. Analyze this tax situation and provide personalized recommendations.
+
+**TAX SITUATION:**
+- Name: {tax_data.personal_info.first_name} {tax_data.personal_info.last_name}
+- Marital Status: {tax_data.personal_info.marital_status}
+- Total Income: ${tax_summary.total_income:,.2f}
+- Current Tax Liability: ${tax_summary.total_tax_liability:,.2f}
+- Effective Tax Rate: {tax_summary.effective_tax_rate:.1f}%
+
+**INCOME DETAILS:**
+- W-2 Wages (Current Year): ${tax_data.income.wages_current_year:,.2f}
+- W-2 Wages (Next Year): ${tax_data.income.wages_next_year:,.2f}
+- Business Net Profit: ${tax_data.income.business_net_profit:,.2f}
+- Business Gross Revenue: ${tax_data.income.business_gross_revenue:,.2f}
+
+**DEDUCTIONS:**
+{f"- Home Office: {tax_data.deductions.home_office.office_square_footage} sqft office in {tax_data.deductions.home_office.home_square_footage} sqft home" if tax_data.deductions and tax_data.deductions.home_office else "- No home office deduction"}
+
+**CREDITS:**
+{f"- WOTC Employees: Group1={tax_data.credits.wotc.group1}, Group2={tax_data.credits.wotc.group2}, Group3={tax_data.credits.wotc.group3}, Group4={tax_data.credits.wotc.group4}, Group5={tax_data.credits.wotc.group5}, Group6={tax_data.credits.wotc.group6}" if tax_data.credits and tax_data.credits.wotc else "- No WOTC credits"}
+
+**DEPENDENTS:**
+{f"- Has Children: {tax_data.dependents.has_children}, Number: {tax_data.dependents.num_dependents}" if tax_data.dependents else "- No dependents information"}
+
+---
+
+**TASK: Provide 5-8 specific, actionable tax planning recommendations.**
+
+For each recommendation, provide:
+1. A clear, specific title
+2. Detailed description
+3. Estimated potential savings (realistic dollar amount)
+4. Priority (high/medium/low)
+5. Category (deduction/credit/retirement/business_structure/estimated_payments)
+6. 2-4 specific action items
+7. Deadline (if applicable)
+8. Confidence score (0.0-1.0)
+
+Also provide:
+- 3-5 key findings about this tax situation
+- 2-3 potential risks to watch out for
+- 2-3 opportunities for tax savings
+
+**OUTPUT FORMAT (JSON):**
+```json
+{{
+  "recommendations": [
+    {{
+      "id": "rec_1",
+      "title": "Maximize Home Office Deduction",
+      "description": "Detailed description...",
+      "potential_savings": 1875,
+      "priority": "high",
+      "category": "deduction",
+      "action_items": [
+        "Calculate exact business use percentage",
+        "Document monthly home expenses",
+        "Compare simplified vs actual expense method"
+      ],
+      "deadline": "2024-12-31",
+      "confidence": 0.9
+    }}
+  ],
+  "ai_insights": {{
+    "key_findings": [
+      "Strong W-2 income provides stable tax base",
+      "Home office deduction is underutilized"
+    ],
+    "risks": [
+      "No retirement contributions detected",
+      "Estimated tax payments may be needed"
+    ],
+    "opportunities": [
+      "Consider S-Corp election for SE tax savings",
+      "Maximize HSA contributions"
+    ]
+  }}
+}}
+```
+
+**IMPORTANT:**
+- Be specific and actionable
+- Base savings on realistic calculations
+- Consider both federal and state tax implications
+- Prioritize recommendations by impact
+- Ensure action items are clear and achievable"""
+
+    try:
+        # Call Gemini API
+        response = gemini_model.generate_content(input_text)
+        response_text = response.text.strip()
+        
+        # Remove markdown code blocks
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        elif response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+        
+        response_text = response_text.strip()
+        
+        # Parse JSON
+        ai_response = json.loads(response_text)
+        
+        # Convert to Pydantic models
+        recommendations = [
+            Recommendation(**rec) for rec in ai_response.get("recommendations", [])
+        ]
+        
+        ai_insights = AIInsights(**ai_response.get("ai_insights", {
+            "key_findings": [],
+            "risks": [],
+            "opportunities": []
+        }))
+        
+        logger.info(f"Generated {len(recommendations)} recommendations")
+        
+        return recommendations, ai_insights
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Gemini JSON response: {e}")
+        return get_fallback_recommendations(tax_data, tax_summary)
+    
+    except Exception as e:
+        logger.error(f"Error calling Gemini API: {e}")
+        return get_fallback_recommendations(tax_data, tax_summary)
+
+
+def get_fallback_recommendations(tax_data: TaxData, tax_summary: TaxSummary) -> tuple:
+    """Provide rule-based recommendations if AI fails"""
+    logger.warning("Using fallback rule-based recommendations")
+    
+    recommendations = []
+    rec_id = 1
+    
+    # Home office recommendation
+    if tax_data.deductions and tax_data.deductions.home_office and tax_data.deductions.home_office.works_from_home:
+        simplified, actual = calculate_home_office_deduction(
+            tax_data.deductions.home_office.home_square_footage,
+            tax_data.deductions.home_office.office_square_footage
+        )
+        savings = max(simplified, actual) * 0.22
+        
+        recommendations.append(Recommendation(
+            id=f"rec_{rec_id}",
+            title="Maximize Home Office Deduction",
+            description="You qualify for a home office deduction. Choose between simplified ($5/sqft) and actual expense methods.",
+            potential_savings=savings,
+            priority="high",
+            category="deduction",
+            action_items=[
+                "Calculate exact business use percentage",
+                "Document all home expenses monthly",
+                "Compare simplified vs actual expense method",
+                "Keep detailed records for audit protection"
+            ],
+            deadline="2024-12-31",
+            confidence=0.9
+        ))
+        rec_id += 1
+    
+    # WOTC recommendation
+    if tax_data.credits and tax_data.credits.wotc:
+        total_wotc = calculate_wotc_credit(tax_data.credits.wotc)
+        if total_wotc > 0:
+            recommendations.append(Recommendation(
+                id=f"rec_{rec_id}",
+                title="Claim Work Opportunity Tax Credit (WOTC)",
+                description=f"You're eligible for ${total_wotc:,.0f} in WOTC credits for qualified employee hires.",
+                potential_savings=total_wotc,
+                priority="high",
+                category="credit",
+                action_items=[
+                    "File Form 8850 within 28 days of hire",
+                    "Obtain state workforce agency certification",
+                    "Complete Form 5884 with tax return",
+                    "Maintain employee documentation"
+                ],
+                deadline="Within 28 days of each hire",
+                confidence=0.95
+            ))
+            rec_id += 1
+    
+    # Retirement contribution recommendation
+    if tax_data.income.wages_current_year > 50000:
+        retirement_contribution = min(23000, tax_data.income.wages_current_year * 0.15)
+        savings = retirement_contribution * 0.22
+        
+        recommendations.append(Recommendation(
+            id=f"rec_{rec_id}",
+            title="Maximize Retirement Contributions",
+            description="Contributing to retirement accounts reduces taxable income while building wealth.",
+            potential_savings=savings,
+            priority="high",
+            category="retirement",
+            action_items=[
+                f"Contribute ${retirement_contribution:,.0f} to 401(k)/IRA",
+                "Set up automatic monthly contributions",
+                "Consider employer match opportunities",
+                "Review contribution limits annually"
+            ],
+            deadline="2024-12-31",
+            confidence=0.85
+        ))
+        rec_id += 1
+    
+    # Quarterly payments recommendation
+    if tax_summary.total_tax_liability > 1000:
+        recommendations.append(Recommendation(
+            id=f"rec_{rec_id}",
+            title="Make Quarterly Estimated Tax Payments",
+            description="Avoid penalties by making timely quarterly estimated tax payments.",
+            potential_savings=0,
+            priority="high",
+            category="estimated_payments",
+            action_items=[
+                "Calculate quarterly payment amounts",
+                "Set up IRS Direct Pay",
+                "Mark calendar for quarterly deadlines",
+                "Adjust payments based on income changes"
+            ],
+            deadline="Q1: Apr 15, Q2: Jun 15, Q3: Sep 15, Q4: Jan 15",
+            confidence=1.0
+        ))
+        rec_id += 1
+    
+    # Business structure recommendation
+    if tax_data.income.business_net_profit > 50000:
+        se_tax_current = calculate_self_employment_tax(tax_data.income.business_net_profit)
+        estimated_savings = se_tax_current * 0.4
+        
+        recommendations.append(Recommendation(
+            id=f"rec_{rec_id}",
+            title="Consider S-Corporation Election",
+            description="An S-Corp election could reduce self-employment taxes on business profits.",
+            potential_savings=estimated_savings,
+            priority="medium",
+            category="business_structure",
+            action_items=[
+                "Consult with tax advisor about S-Corp benefits",
+                "Calculate potential SE tax savings",
+                "File Form 2553 if beneficial",
+                "Set up reasonable salary structure"
+            ],
+            deadline="March 15 for current year election",
+            confidence=0.7
+        ))
+        rec_id += 1
+    
+    # AI Insights
+    ai_insights = AIInsights(
+        key_findings=[
+            f"Total income of ${tax_summary.total_income:,.0f} places you in strong financial position",
+            f"Current effective tax rate is {tax_summary.effective_tax_rate:.1f}%",
+            f"Multiple tax-saving opportunities identified"
+        ],
+        risks=[
+            "Ensure all income is properly reported",
+            "Keep detailed records for all deductions",
+            "Stay current on quarterly estimated payments"
+        ],
+        opportunities=[
+            "Maximize retirement account contributions",
+            "Optimize business structure for tax efficiency",
+            "Consider additional tax-advantaged accounts (HSA, 529)"
+        ]
+    )
+    
+    return recommendations, ai_insights
+
+
+# ==================== DATABASE OPERATIONS ====================
+
+async def save_analysis_to_db(
+    user_id: str,
+    tax_year: int,
+    response,  # TaxAnalysisResponse
+    tax_return_id: Optional[str] = None
+) -> Optional[str]:
+    """Save tax analysis to MongoDB"""
+    try:
+        db = Database.get_database()
+        
+        # Create document
+        analysis_doc = TaxAnalysisDocument(
+            user_id=user_id,
+            tax_year=tax_year,
+            summary=response.summary.dict(),
+            recommendations=[rec.dict() for rec in response.recommendations],
+            scenarios=[scenario.dict() for scenario in response.scenarios],
+            ai_insights=response.ai_insights.dict(),
+            quarterly_estimates=response.quarterly_estimates.dict(),
+            processing_metadata=response.processing_metadata.dict(),
+            tax_return_id=tax_return_id
+        )
+        
+        # Insert into database
+        result = await db.tax_analyses.insert_one(
+            model_to_dict(analysis_doc)
+        )
+        
+        logger.info(f"Saved analysis to database: {result.inserted_id}")
+        return str(result.inserted_id)
+        
+    except Exception as e:
+        logger.error(f"Error saving analysis to database: {e}")
+        return None
+
+# ==================== API ENDPOINTS ====================
+
+@app.post("/api/v1/planning/analyze", response_model=TaxAnalysisResponse)
+async def analyze_tax_situation(request: TaxAnalysisRequest):
+    """Analyze tax situation and generate personalized recommendations"""
+    try:
+        start_time = datetime.utcnow()
+        logger.info(f"Starting tax analysis for user: {request.user_id}")
+        logger.info(f"Tax year: {request.tax_year}")
+        
+        # Calculate tax summary
+        total_income = (
+            request.tax_data.income.wages_current_year +
+            request.tax_data.income.business_net_profit
+        )
+        
+        # Calculate deductions
+        total_deductions = 14600 if request.tax_data.personal_info.marital_status != "married" else 29200
+        
+        # Add home office deduction
+        if request.tax_data.deductions and request.tax_data.deductions.home_office:
+            if request.tax_data.deductions.home_office.works_from_home:
+                simplified, actual = calculate_home_office_deduction(
+                    request.tax_data.deductions.home_office.home_square_footage,
+                    request.tax_data.deductions.home_office.office_square_footage
+                )
+                total_deductions += max(simplified, actual)
+        
+        # SE tax deduction
+        if request.tax_data.income.business_net_profit > 0:
+            se_tax = calculate_self_employment_tax(request.tax_data.income.business_net_profit)
+            total_deductions += se_tax * 0.5
+        
+        taxable_income = max(0, total_income - total_deductions)
+        
+        # Calculate federal tax
+        filing_status = "married_joint" if request.tax_data.personal_info.marital_status == "married" else "single"
+        federal_tax = calculate_federal_tax(taxable_income, filing_status)
+        
+        # Add SE tax
+        se_tax = 0
+        if request.tax_data.income.business_net_profit > 0:
+            se_tax = calculate_self_employment_tax(request.tax_data.income.business_net_profit)
+        
+        # Calculate credits
+        total_credits = 0
+        
+        if request.tax_data.credits and request.tax_data.credits.wotc:
+            wotc_credit = calculate_wotc_credit(request.tax_data.credits.wotc)
+            total_credits += wotc_credit
+        
+        if request.tax_data.dependents and request.tax_data.dependents.has_children:
+            ctc = calculate_child_tax_credit(
+                request.tax_data.dependents.num_dependents,
+                total_income
+            )
+            total_credits += ctc
+        
+        total_tax_liability = max(0, federal_tax + se_tax - total_credits)
+        effective_tax_rate = (total_tax_liability / total_income * 100) if total_income > 0 else 0
+        
+        tax_summary = TaxSummary(
+            total_income=total_income,
+            total_deductions=total_deductions,
+            total_credits=total_credits,
+            taxable_income=taxable_income,
+            total_tax_liability=total_tax_liability,
+            effective_tax_rate=effective_tax_rate
+        )
+        
+        logger.info(f"Tax summary: ${total_tax_liability:,.2f} liability")
+        
+        # Generate AI recommendations
+        recommendations, ai_insights = generate_ai_recommendations(request.tax_data, tax_summary)
+        
+        total_potential_savings = sum(rec.potential_savings for rec in recommendations)
+        logger.info(f"Total potential savings: ${total_potential_savings:,.2f}")
+        
+        # Create scenarios
+        baseline_scenario = TaxScenario(
+            name="Current Situation (Baseline)",
+            description="Your current tax situation with no changes",
+            tax_liability=total_tax_liability,
+            effective_rate=effective_tax_rate,
+            changes=[]
+        )
+        
+        optimized_tax = max(0, total_tax_liability - total_potential_savings)
+        optimized_rate = (optimized_tax / total_income * 100) if total_income > 0 else 0
+        
+        optimized_scenario = TaxScenario(
+            name="Optimized Strategy (Recommended)",
+            description="Implementing all recommended tax strategies",
+            tax_liability=optimized_tax,
+            effective_rate=optimized_rate,
+            changes=[rec.title for rec in recommendations[:5]],
+            savings=total_potential_savings
+        )
+        
+        scenarios = [baseline_scenario, optimized_scenario]
+        
+        # Calculate quarterly estimates
+        quarterly_amount = total_tax_liability / 4
+        quarterly_estimates = QuarterlyEstimates(
+            q1=quarterly_amount,
+            q2=quarterly_amount,
+            q3=quarterly_amount,
+            q4=quarterly_amount,
+            total=total_tax_liability
+        )
+        
+        # Create response
+        end_time = datetime.utcnow()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        response = TaxAnalysisResponse(
+            success=True,
+            user_id=request.user_id,
+            tax_year=request.tax_year,
+            summary=tax_summary,
+            recommendations=recommendations,
+            scenarios=scenarios,
+            ai_insights=ai_insights,
+            quarterly_estimates=quarterly_estimates,
+            processing_metadata=ProcessingMetadata(
+                processing_time_seconds=processing_time,
+                ai_model="gemini-2.0-flash-exp",
+                optimization_level=request.options.optimization_level,
+                total_potential_savings=total_potential_savings
+            ),
+            timestamp=end_time.isoformat()
+        )
+        logger.info(f"Analysis completed successfully in {processing_time:.2f}s")
+        
+        # Save to database
+        analysis_id = await save_analysis_to_db(
+            request.user_id,
+            request.tax_year,
+            response
+        )
+        
+        if analysis_id:
+            logger.info(f"Analysis saved to MongoDB with ID: {analysis_id}")
+    
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in tax analysis: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analyzing tax situation: {str(e)}"
+        )
+
+
+@app.get("/api/v1/planning/health")
+async def health_check():
+    """Health check endpoint"""
+    logger.debug("Health check requested")
+    return {
+        "status": "healthy",
+        "service": "tax-planning",
+        "version": "1.0.0",
+        "ai_model": "gemini-2.0-flash-exp",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "service": "AI-Driven Tax Planning Service",
+        "version": "1.0.0",
+        "ai_model": "Gemini Flash 2.5",
+        "endpoints": {
+            "analyze": "/api/v1/planning/analyze",
+            "health": "/api/v1/planning/health",
+            "docs": "/docs"
+        }
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...")
+    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+
+services/shared/__init__.py
+# shared/__init__.py
+"""Shared utilities for all services"""
+
+from .database import Database, create_indexes
+from .db_models import (
+    TaxReturnDocument,
+    TaxAnalysisDocument,
+    UserDocument,
+    model_to_dict,
+    dict_to_model
+)
+
+__all__ = [
+    'Database',
+    'create_indexes',
+    'TaxReturnDocument',
+    'TaxAnalysisDocument',
+    'UserDocument',
+    'model_to_dict',
+    'dict_to_model'
+]
+
+
+services/shared/database.py
+# shared/database.py
+"""
+MongoDB Database Configuration and Utilities
+"""
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+import logging
+from typing import Optional
+import os
+
+logger = logging.getLogger(__name__)
+
+
+class Database:
+    """MongoDB Database Manager"""
+    
+    client: Optional[AsyncIOMotorClient] = None
+    db = None
+    
+    # Configuration
+    MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    DATABASE_NAME = os.getenv("DATABASE_NAME", "tax_planning_db")
+    
+    @classmethod
+    async def connect_db(cls):
+        """Connect to MongoDB"""
+        try:
+            cls.client = AsyncIOMotorClient(cls.MONGODB_URL)
+            cls.db = cls.client[cls.DATABASE_NAME]
+            
+            # Test connection
+            await cls.client.admin.command('ping')
+            logger.info(f"✅ Connected to MongoDB: {cls.DATABASE_NAME}")
+            logger.info(f"   URL: {cls.MONGODB_URL}")
+            
+        except ConnectionFailure as e:
+            logger.error(f"❌ Failed to connect to MongoDB: {e}")
+            raise
+    
+    @classmethod
+    async def close_db(cls):
+        """Close MongoDB connection"""
+        if cls.client:
+            cls.client.close()
+            logger.info("MongoDB connection closed")
+    
+    @classmethod
+    def get_database(cls):
+        """Get database instance"""
+        return cls.db
+    
+    @classmethod
+    def get_collection(cls, collection_name: str):
+        """Get collection by name"""
+        return cls.db[collection_name]
+
+
+# Synchronous client for initialization scripts
+def get_sync_client():
+    """Get synchronous MongoDB client"""
+    url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    return MongoClient(url)
+
+
+def create_indexes():
+    """Create database indexes for better performance"""
+    client = get_sync_client()
+    db = client[Database.DATABASE_NAME]
+    
+    logger.info("Creating database indexes...")
+    
+    # tax_returns collection indexes
+    tax_returns = db.tax_returns
+    tax_returns.create_index([("user_id", 1), ("tax_year", -1)])
+    tax_returns.create_index([("created_at", -1)])
+    tax_returns.create_index([("user_id", 1)])
+    
+    # tax_analyses collection indexes
+    tax_analyses = db.tax_analyses
+    tax_analyses.create_index([("user_id", 1), ("tax_year", -1)])
+    tax_analyses.create_index([("analysis_date", -1)])
+    tax_analyses.create_index([("user_id", 1)])
+    
+    # users collection indexes
+    users = db.users
+    users.create_index([("user_id", 1)], unique=True)
+    users.create_index([("email", 1)], unique=True, sparse=True)
+    
+    logger.info("✅ Database indexes created successfully")
+    
+    client.close()
+
+
+if __name__ == "__main__":
+    # Test database connection
+    import asyncio
+    
+    async def test_connection():
+        await Database.connect_db()
+        db = Database.get_database()
+        
+        # Test insert
+        result = await db.test_collection.insert_one({"test": "data"})
+        print(f"✅ Test insert successful: {result.inserted_id}")
+        
+        # Test find
+        doc = await db.test_collection.find_one({"test": "data"})
+        print(f"✅ Test find successful: {doc}")
+        
+        # Clean up
+        await db.test_collection.delete_one({"test": "data"})
+        print("✅ Test cleanup successful")
+        
+        await Database.close_db()
+    
+    asyncio.run(test_connection())
+
+
+
+services/shared/db_models.py
+# shared/db_models.py
+"""
+MongoDB Document Models (Pydantic v2 Compatible)
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field, GetJsonSchemaHandler
+from pydantic.json_schema import JsonSchemaValue
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from bson import ObjectId
+
+
+# --------------------------------------------------------------------
+# Custom ObjectId Type for Pydantic v2
+# --------------------------------------------------------------------
+class PyObjectId(ObjectId):
+    """Custom BSON ObjectId for Pydantic v2."""
+
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        if isinstance(v, ObjectId):
+            return v
+        if not ObjectId.is_valid(v):
+            raise ValueError("Invalid ObjectId")
+        return ObjectId(v)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, schema: JsonSchemaValue, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Define schema for OpenAPI/JSON output."""
+        schema = handler(schema)
+        schema.update(type="string", examples=["64a4b7f3d2e3b3e2d6c9a2f1"])
+        return schema
+
+
+# --------------------------------------------------------------------
+# Base MongoDB Document Models
+# --------------------------------------------------------------------
+class TaxReturnDocument(BaseModel):
+    """Tax Return MongoDB Document"""
+
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str
+    tax_year: int
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Tax data
+    personal_info: Dict[str, Any]
+    income: Dict[str, Any]
+    deductions: Optional[Dict[str, Any]] = None
+    credits: Optional[Dict[str, Any]] = None
+    dependents: Optional[List[Dict[str, Any]]] = None
+
+    # Metadata
+    source: str = "web_form"  # web_form, pdf_upload, api
+    status: str = "draft"  # draft, submitted, processed
+
+    class Config:
+        populate_by_name = True  # ✅ renamed for Pydantic v2
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
+class TaxAnalysisDocument(BaseModel):
+    """Tax Analysis MongoDB Document"""
+
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str
+    tax_year: int
+    analysis_date: datetime = Field(default_factory=datetime.utcnow)
+
+    summary: Dict[str, Any]
+    recommendations: List[Dict[str, Any]]
+    scenarios: List[Dict[str, Any]]
+    ai_insights: Dict[str, Any]
+    quarterly_estimates: Dict[str, Any]
+    processing_metadata: Dict[str, Any]
+    tax_return_id: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
+class UserDocument(BaseModel):
+    """User MongoDB Document"""
+
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str
+    email: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_login: Optional[datetime] = None
+    last_analysis: Optional[datetime] = None
+
+    total_returns: int = 0
+    total_analyses: int = 0
+    settings: Optional[Dict[str, Any]] = None
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
+# --------------------------------------------------------------------
+# Helper Conversion Functions
+# --------------------------------------------------------------------
+def model_to_dict(model: BaseModel, exclude_none: bool = True) -> dict:
+    """Convert Pydantic model to dict for MongoDB insertion"""
+    return model.model_dump(by_alias=True, exclude_none=exclude_none)
+
+
+def dict_to_model(data: dict, model_class: type[BaseModel]):
+    """Convert MongoDB dict to Pydantic model"""
+    return model_class(**data)
+
+
+
+services/tax-data-service/requirements.txt
+fastapi
+uvicorn
+pydantic
+sqlalchemy
+psycopg2-binary
+python-dotenv
+motor
+
+
+
+services/tax-planning-service/requirements.txt
+fastapi
+uvicorn
+pydantic
+anthropic
+python-dotenv==1.0.0
+httpx
+sqlalchemy
+psycopg2-binary
+redis
+logger_config
+arrow
+motor
+
+
+
+services/pdf-extraction-service/requirements.txt
+# requirements.txt
+fastapi
+uvicorn
+python-multipart
+pydantic
+PyPDF2
+pdfplumber
+google-generativeai
+python-dotenv
+
+
+
+scripts/start_services.sh
+#!/bin/bash
+
+echo "Starting all services..."
+
+# Activate venv
+source venv/bin/activate
+
+# Start services in background
+echo "Starting PDF Extraction Service (Port 8000)..."
+cd services/pdf-extraction-service
+python main.py > ../../logs/pdf-extraction.log 2>&1 &
+PDF_PID=$!
+cd ../..
+
+sleep 2
+
+echo "Starting Tax Planning Service (Port 8001)..."
+cd services/tax-planning-service
+python main.py > ../../logs/tax-planning.log 2>&1 &
+PLANNING_PID=$!
+cd ../..
+
+sleep 2
+
+echo "Starting Tax Data Service (Port 8002)..."
+cd services/tax-data-service
+python main.py > ../../logs/tax-data.log 2>&1 &
+DATA_PID=$!
+cd ../..
+
+echo ""
+echo "All services started!"
+echo ""
+echo "Service Status:"
+echo "- PDF Extraction: http://localhost:8000 (PID: $PDF_PID)"
+echo "- Tax Planning:   http://localhost:8001 (PID: $PLANNING_PID)"
+echo "- Tax Data:       http://localhost:8002 (PID: $DATA_PID)"
+echo ""
+echo "Check logs in ./logs/"
+echo "Stop services: ./scripts/stop_services.sh"
+
+
+
+scripts/stop_services.sh
+#!/bin/bash
+
+echo "Stopping all services..."
+
+# Kill services by port
+kill $(lsof -t -i:8000) 2>/dev/null || echo "No service on port 8000"
+kill $(lsof -t -i:8001) 2>/dev/null || echo "No service on port 8001"
+kill $(lsof -t -i:8002) 2>/dev/null || echo "No service on port 8002"
+
+echo "All services stopped"
+
+
+
+scripts/test_all.sh
+#!/bin/bash
+
+echo "Testing all services..."
+
+echo ""
+echo "1. Testing PDF Extraction Service..."
+curl -s http://localhost:8000/health | python3 -m json.tool
+
+echo ""
+echo "2. Testing Tax Planning Service..."
+curl -s http://localhost:8001/api/v1/planning/health | python3 -m json.tool
+
+echo ""
+echo "3. Testing Tax Data Service..."
+# curl -s http://localhost:8002/health | python3 -m json.tool
+curl -s http://localhost:8002/api/v1/health | python3 -m json.tool
+
+echo ""
+echo "All tests complete"
+
+
+
+exact runtime error
+......:"client metadata","attr":{"remote":"127.0.0.1:38318","client":"conn200","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.5.8"},"driver":{"name":"nodejs|mongosh","version":"6.19.0|2.5.8"},"platform":"Node.js v20.19.5, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.209-160.339.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.467+00:00"},"s":"I",  "c":"NETWORK",  "id":6788700, "ctx":"conn199","msg":"Received first command on ingress connection since session start or auth handshake","attr":{"elapsedMillis":2}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.468+00:00"},"s":"I",  "c":"NETWORK",  "id":6788700, "ctx":"conn200","msg":"Received first command on ingress connection since session start or auth handshake","attr":{"elapsedMillis":1}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.477+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn198","msg":"Connection ended","attr":{"remote":"127.0.0.1:38306","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"5ec3b8ee-32b6-4578-a371-2e9621885496"}},"connectionId":198,"connectionCount":4}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.477+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn200","msg":"Connection ended","attr":{"remote":"127.0.0.1:38318","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"0b56aa94-130a-455e-ad9c-77646fb31ccd"}},"connectionId":200,"connectionCount":3}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.477+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn199","msg":"Connection ended","attr":{"remote":"127.0.0.1:38314","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"1a278733-693f-4b64-a12c-812a6a92922b"}},"connectionId":199,"connectionCount":2}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.477+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn196","msg":"Connection ended","attr":{"remote":"127.0.0.1:38284","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"57717ff4-cf41-4f4d-a4e8-0e32f8bdd052"}},"connectionId":196,"connectionCount":1}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:14.478+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn197","msg":"Connection ended","attr":{"remote":"127.0.0.1:38292","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"6c85fb0a-9374-47e5-92dc-54a4f57e4201"}},"connectionId":197,"connectionCount":0}}
+tax_planning_service    | Traceback (most recent call last):
+tax_planning_service    |   File "/usr/local/bin/uvicorn", line 8, in <module>
+tax_planning_service    |     sys.exit(main())nable Watch
+tax_planning_service    |              ^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1462, in __call__
+tax_planning_service    |     return self.main(*args, **kwargs)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1383, in main
+tax_planning_service    |     rv = self.invoke(ctx)
+tax_planning_service    |          ^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1246, in invoke
+tax_planning_service    |     return ctx.invoke(self.callback, **ctx.params)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 814, in invoke
+tax_planning_service    |     return callback(*args, **kwargs)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/main.py", line 423, in main
+tax_planning_service    |     run(
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/main.py", line 593, in run
+tax_planning_service    |     server.run()
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 67, in run
+tax_planning_service    |     return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/_compat.py", line 30, in asyncio_run
+tax_planning_service    |     return runner.run(main)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+tax_planning_service    |     return self._loop.run_until_complete(task)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+tax_planning_service    |     return future.result()
+tax_planning_service    |            ^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 71, in serve
+tax_planning_service    |     await self._serve(sockets)
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 78, in _serve
+tax_planning_service    |     config.load()
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/config.py", line 439, in load
+tax_planning_service    |     self.loaded_app = import_from_string(self.app)
+tax_planning_service    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/importer.py", line 22, in import_from_string
+tax_planning_service    |     raise exc from None
+tax_planning_service    |   File "/usr/local/lib/python3.11/site-packages/uvicorn/importer.py", line 19, in import_from_string
+tax_planning_service    |     module = importlib.import_module(module_str)
+tax_planning_service    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "/usr/local/lib/python3.11/importlib/__init__.py", line 126, in import_module
+tax_planning_service    |     return _bootstrap._gcd_import(name[level:], package, level)
+tax_planning_service    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_planning_service    |   File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+tax_planning_service    |   File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+tax_planning_service    |   File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+tax_planning_service    |   File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+tax_planning_service    |   File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+tax_planning_service    |   File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+tax_planning_service    |   File "/app/main.py", line 14, in <module>
+tax_planning_service    |     import google.generativeai as genai
+tax_planning_service    | ModuleNotFoundError: No module named 'google'
+tax_data_service        | Traceback (most recent call last):
+tax_data_service        |   File "/usr/local/bin/uvicorn", line 8, in <module>
+tax_data_service        |     sys.exit(main())
+tax_data_service        |              ^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1462, in __call__
+tax_data_service        |     return self.main(*args, **kwargs)
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1383, in main
+tax_data_service        |     rv = self.invoke(ctx)
+tax_data_service        |          ^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 1246, in invoke
+tax_data_service        |     return ctx.invoke(self.callback, **ctx.params)
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/click/core.py", line 814, in invoke
+tax_data_service        |     return callback(*args, **kwargs)
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/main.py", line 423, in main
+tax_data_service        |     run(
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/main.py", line 593, in run
+tax_data_service        |     server.run()
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 67, in run
+tax_data_service        |     return asyncio_run(self.serve(sockets=sockets), loop_factory=self.config.get_loop_factory())
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/_compat.py", line 30, in asyncio_run
+tax_data_service        |     return runner.run(main)
+tax_data_service        |            ^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+tax_data_service        |     return self._loop.run_until_complete(task)
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+tax_data_service        |     return future.result()
+tax_data_service        |            ^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 71, in serve
+tax_data_service        |     await self._serve(sockets)
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/server.py", line 78, in _serve
+tax_data_service        |     config.load()
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/config.py", line 439, in load
+tax_data_service        |     self.loaded_app = import_from_string(self.app)
+tax_data_service        |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/importer.py", line 22, in import_from_string
+tax_data_service        |     raise exc from None
+tax_data_service        |   File "/usr/local/lib/python3.11/site-packages/uvicorn/importer.py", line 19, in import_from_string
+tax_data_service        |     module = importlib.import_module(module_str)
+tax_data_service        |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "/usr/local/lib/python3.11/importlib/__init__.py", line 126, in import_module
+tax_data_service        |     return _bootstrap._gcd_import(name[level:], package, level)
+tax_data_service        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tax_data_service        |   File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+tax_data_service        |   File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+tax_data_service        |   File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+tax_data_service        |   File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+tax_data_service        |   File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+tax_data_service        |   File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+tax_data_service        |   File "/app/main.py", line 17, in <module>
+tax_data_service        |     from shared.database import Database
+tax_data_service        | ModuleNotFoundError: No module named 'shared'
+tax_planning_service exited with code 1 (restarting)
+tax_data_service exited with code 1 (restarting)
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:18.474+00:00"},"s":"I",  "c":"WTCHKPT",  "id":22430,   "ctx":"Checkpointer","msg":"WiredTiger message","attr":{"message":{"ts_sec":1762291338,"ts_usec":474505,"thread":"1:0xffffa940ebc0","session_name":"WT_SESSION.checkpoint","category":"WT_VERB_CHECKPOINT_PROGRESS","category_id":6,"verbose_level":"DEBUG_1","verbose_level_id":1,"msg":"saving checkpoint snapshot min: 78, snapshot max: 78 snapshot count: 0, oldest timestamp: (0, 0) , meta checkpoint timestamp: (0, 0) base write gen: 52"}}}
+Gracefully Stopping... press Ctrl+C again to force
+
+ Container tax_planning_service  Stopping
+ Container tax_data_service  Stopping
+ Container pdf_extraction_service  Stopping
+ Container tax_data_service  Stopped
+ Container tax_planning_service  Stopped
+ Container taxplanner_mongo  Stopping
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.118+00:00"},"s":"I",  "c":"CONTROL",  "id":23377,   "ctx":"SignalHandler","msg":"Received signal","attr":{"signal":15,"error":"Terminated"}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.119+00:00"},"s":"I",  "c":"CONTROL",  "id":23378,   "ctx":"SignalHandler","msg":"Signal was sent by kill(2)","attr":{"pid":0,"uid":0}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.120+00:00"},"s":"I",  "c":"CONTROL",  "id":23381,   "ctx":"SignalHandler","msg":"will terminate after current cmd ends"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.123+00:00"},"s":"I",  "c":"REPL",     "id":4784900, "ctx":"SignalHandler","msg":"Stepping down the ReplicationCoordinator for shutdown","attr":{"waitTimeMillis":15000}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.125+00:00"},"s":"I",  "c":"REPL",     "id":4794602, "ctx":"SignalHandler","msg":"Attempting to enter quiesce mode"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.125+00:00"},"s":"I",  "c":"-",        "id":6371601, "ctx":"SignalHandler","msg":"Shutting down the FLE Crud thread pool"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.125+00:00"},"s":"I",  "c":"COMMAND",  "id":4784901, "ctx":"SignalHandler","msg":"Shutting down the MirrorMaestro"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.125+00:00"},"s":"I",  "c":"SHARDING", "id":4784902, "ctx":"SignalHandler","msg":"Shutting down the WaitForMajorityService"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.127+00:00"},"s":"I",  "c":"CONTROL",  "id":4784903, "ctx":"SignalHandler","msg":"Shutting down the LogicalSessionCache"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"NETWORK",  "id":20562,   "ctx":"SignalHandler","msg":"Shutdown: going to close listening sockets"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"NETWORK",  "id":23017,   "ctx":"listener","msg":"removing socket file","attr":{"path":"/tmp/mongodb-27017.sock"}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"NETWORK",  "id":4784905, "ctx":"SignalHandler","msg":"Shutting down the global connection pool"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"CONTROL",  "id":4784906, "ctx":"SignalHandler","msg":"Shutting down the FlowControlTicketholder"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"-",        "id":20520,   "ctx":"SignalHandler","msg":"Stopping further Flow Control ticket acquisitions."}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.129+00:00"},"s":"I",  "c":"CONTROL",  "id":4784908, "ctx":"SignalHandler","msg":"Shutting down the PeriodicThreadToAbortExpiredTransactions"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.130+00:00"},"s":"I",  "c":"REPL",     "id":4784909, "ctx":"SignalHandler","msg":"Shutting down the ReplicationCoordinator"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.131+00:00"},"s":"I",  "c":"SHARDING", "id":4784910, "ctx":"SignalHandler","msg":"Shutting down the ShardingInitializationMongoD"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.131+00:00"},"s":"I",  "c":"REPL",     "id":4784911, "ctx":"SignalHandler","msg":"Enqueuing the ReplicationStateTransitionLock for shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.131+00:00"},"s":"I",  "c":"-",        "id":4784912, "ctx":"SignalHandler","msg":"Killing all operations for shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.131+00:00"},"s":"I",  "c":"-",        "id":4695300, "ctx":"SignalHandler","msg":"Interrupted all currently running operations","attr":{"opsKilled":3}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.131+00:00"},"s":"I",  "c":"TENANT_M", "id":5093807, "ctx":"SignalHandler","msg":"Shutting down all TenantMigrationAccessBlockers on global shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.134+00:00"},"s":"I",  "c":"ASIO",     "id":22582,   "ctx":"TenantMigrationBlockerNet","msg":"Killing all outstanding egress activity."}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.135+00:00"},"s":"I",  "c":"ASIO",     "id":6529201, "ctx":"SignalHandler","msg":"Network interface redundant shutdown","attr":{"state":"Stopped"}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.135+00:00"},"s":"I",  "c":"ASIO",     "id":22582,   "ctx":"SignalHandler","msg":"Killing all outstanding egress activity."}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.135+00:00"},"s":"I",  "c":"COMMAND",  "id":4784913, "ctx":"SignalHandler","msg":"Shutting down all open transactions"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.135+00:00"},"s":"I",  "c":"REPL",     "id":4784914, "ctx":"SignalHandler","msg":"Acquiring the ReplicationStateTransitionLock for shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.136+00:00"},"s":"I",  "c":"INDEX",    "id":4784915, "ctx":"SignalHandler","msg":"Shutting down the IndexBuildsCoordinator"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.138+00:00"},"s":"I",  "c":"NETWORK",  "id":4784918, "ctx":"SignalHandler","msg":"Shutting down the ReplicaSetMonitor"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.139+00:00"},"s":"I",  "c":"SHARDING", "id":4784921, "ctx":"SignalHandler","msg":"Shutting down the MigrationUtilExecutor"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.141+00:00"},"s":"I",  "c":"ASIO",     "id":22582,   "ctx":"MigrationUtil-TaskExecutor","msg":"Killing all outstanding egress activity."}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.141+00:00"},"s":"I",  "c":"COMMAND",  "id":4784923, "ctx":"SignalHandler","msg":"Shutting down the ServiceEntryPoint"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.141+00:00"},"s":"I",  "c":"CONTROL",  "id":4784927, "ctx":"SignalHandler","msg":"Shutting down the HealthLog"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.141+00:00"},"s":"I",  "c":"CONTROL",  "id":4784928, "ctx":"SignalHandler","msg":"Shutting down the TTL monitor"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.141+00:00"},"s":"I",  "c":"INDEX",    "id":3684100, "ctx":"SignalHandler","msg":"Shutting down TTL collection monitor thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.142+00:00"},"s":"I",  "c":"INDEX",    "id":3684101, "ctx":"SignalHandler","msg":"Finished shutting down TTL collection monitor thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.142+00:00"},"s":"I",  "c":"CONTROL",  "id":6278511, "ctx":"SignalHandler","msg":"Shutting down the Change Stream Expired Pre-images Remover"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"CONTROL",  "id":4784929, "ctx":"SignalHandler","msg":"Acquiring the global lock for shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"CONTROL",  "id":4784930, "ctx":"SignalHandler","msg":"Shutting down the storage engine"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"STORAGE",  "id":22320,   "ctx":"SignalHandler","msg":"Shutting down journal flusher thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"STORAGE",  "id":22321,   "ctx":"SignalHandler","msg":"Finished shutting down journal flusher thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"STORAGE",  "id":22322,   "ctx":"SignalHandler","msg":"Shutting down checkpoint thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"STORAGE",  "id":22323,   "ctx":"SignalHandler","msg":"Finished shutting down checkpoint thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.143+00:00"},"s":"I",  "c":"STORAGE",  "id":22261,   "ctx":"SignalHandler","msg":"Timestamp monitor shutting down"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.147+00:00"},"s":"I",  "c":"STORAGE",  "id":20282,   "ctx":"SignalHandler","msg":"Deregistering all the collections"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.152+00:00"},"s":"I",  "c":"STORAGE",  "id":22317,   "ctx":"SignalHandler","msg":"WiredTigerKVEngine shutting down"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.152+00:00"},"s":"I",  "c":"STORAGE",  "id":22318,   "ctx":"SignalHandler","msg":"Shutting down session sweeper thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.153+00:00"},"s":"I",  "c":"STORAGE",  "id":22319,   "ctx":"SignalHandler","msg":"Finished shutting down session sweeper thread"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.154+00:00"},"s":"I",  "c":"STORAGE",  "id":4795902, "ctx":"SignalHandler","msg":"Closing WiredTiger","attr":{"closeConfig":"leak_memory=true,use_timestamp=false,"}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.156+00:00"},"s":"I",  "c":"WTCHKPT",  "id":22430,   "ctx":"SignalHandler","msg":"WiredTiger message","attr":{"message":{"ts_sec":1762291341,"ts_usec":156013,"thread":"1:0xffffb480ebc0","session_name":"close_ckpt","category":"WT_VERB_CHECKPOINT_PROGRESS","category_id":6,"verbose_level":"DEBUG_1","verbose_level_id":1,"msg":"saving checkpoint snapshot min: 79, snapshot max: 79 snapshot count: 0, oldest timestamp: (0, 0) , meta checkpoint timestamp: (0, 0) base write gen: 52"}}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.160+00:00"},"s":"I",  "c":"WTRECOV",  "id":22430,   "ctx":"SignalHandler","msg":"WiredTiger message","attr":{"message":{"ts_sec":1762291341,"ts_usec":160600,"thread":"1:0xffffb480ebc0","session_name":"WT_CONNECTION.close","category":"WT_VERB_RECOVERY_PROGRESS","category_id":30,"verbose_level":"DEBUG_1","verbose_level_id":1,"msg":"shutdown checkpoint has successfully finished and ran for 4 milliseconds"}}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.161+00:00"},"s":"I",  "c":"WTRECOV",  "id":22430,   "ctx":"SignalHandler","msg":"WiredTiger message","attr":{"message":{"ts_sec":1762291341,"ts_usec":161040,"thread":"1:0xffffb480ebc0","session_name":"WT_CONNECTION.close","category":"WT_VERB_RECOVERY_PROGRESS","category_id":30,"verbose_level":"DEBUG_1","verbose_level_id":1,"msg":"shutdown was completed successfully and took 6ms, including 0ms for the rollback to stable, and 4ms for the checkpoint."}}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.169+00:00"},"s":"I",  "c":"STORAGE",  "id":4795901, "ctx":"SignalHandler","msg":"WiredTiger closed","attr":{"durationMillis":15}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.169+00:00"},"s":"I",  "c":"STORAGE",  "id":22279,   "ctx":"SignalHandler","msg":"shutdown: removing fs lock..."}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.169+00:00"},"s":"I",  "c":"-",        "id":4784931, "ctx":"SignalHandler","msg":"Dropping the scope cache for shutdown"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.169+00:00"},"s":"I",  "c":"FTDC",     "id":20626,   "ctx":"SignalHandler","msg":"Shutting down full-time diagnostic data capture"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.172+00:00"},"s":"I",  "c":"CONTROL",  "id":20565,   "ctx":"SignalHandler","msg":"Now exiting"}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.173+00:00"},"s":"I",  "c":"CONTROL",  "id":8423404, "ctx":"SignalHandler","msg":"mongod shutdown complete","attr":{"Summary of time elapsed":{"Statistics":{"Enter terminal shutdown":"0 ms","Step down the replication coordinator for shutdown":"4 ms","Time spent in quiesce mode":"0 ms","Shut down FLE Crud subsystem":"0 ms","Shut down MirrorMaestro":"0 ms","Shut down WaitForMajorityService":"2 ms","Shut down the logical session cache":"0 ms","Shut down the transport layer":"2 ms","Shut down the global connection pool":"0 ms","Shut down the flow control ticket holder":"0 ms","Kill all operations for shutdown":"0 ms","Shut down all tenant migration access blockers on global shutdown":"4 ms","Shut down all open transactions":"0 ms","Acquire the RSTL for shutdown":"0 ms","Shut down the IndexBuildsCoordinator and wait for index builds to finish":"1 ms","Shut down the replica set monitor":"2 ms","Shut down the migration util executor":"2 ms","Shut down the health log":"0 ms","Shut down the TTL monitor":"1 ms","Shut down expired pre-images and documents removers":"0 ms","Shut down the storage engine":"26 ms","Wait for the oplog cap maintainer thread to stop":"0 ms","Shut down full-time data capture":"0 ms","shutdownTask total elapsed time":"51 ms"}}}}
+taxplanner_mongo        | {"t":{"$date":"2025-11-04T21:22:21.173+00:00"},"s":"I",  "c":"CONTROL",  "id":23138,   "ctx":"SignalHandler","msg":"Shutting down","attr":{"exitCode":0}}
+pdf_extraction_service  | INFO:     Shutting down
+pdf_extraction_service  | INFO:     Waiting for application shutdown.
+pdf_extraction_service  | INFO:     Application shutdown complete.
+pdf_extraction_service  | INFO:     Finished server process [1]
+ Container taxplanner_mongo  Stopped
+taxplanner_mongo exited with code 0
+ Container pdf_extraction_service  Stopped
+pdf_extraction_service exited with code 0
+
+
+ls -la
+total 56
+drwxr-xr-x  13 consultadd  staff    416 Nov  5 02:54 .
+drwxr-xr-x   7 consultadd  staff    224 Nov  4 20:32 ..
+-rw-r--r--@  1 consultadd  staff  10244 Nov  5 02:14 .DS_Store
+-rw-r--r--   1 consultadd  staff      7 Nov  5 00:07 .python-version
+-rw-r--r--   1 consultadd  staff   1346 Nov  4 20:57 README.md
+-rw-r--r--   1 consultadd  staff      0 Nov  5 02:54 a.txt
+-rw-r--r--   1 consultadd  staff   5277 Nov  5 02:45 docker-compose.yml
+drwxr-xr-x   2 consultadd  staff     64 Nov  4 20:18 gateway
+drwxr-xr-x   8 consultadd  staff    256 Nov  5 02:33 logs
+drwxr-xr-x   6 consultadd  staff    192 Nov  4 20:55 scripts
+drwxr-xr-x   9 consultadd  staff    288 Nov  5 01:29 services
+drwxr-xr-x   3 consultadd  staff     96 Nov  5 01:30 shared
+drwxr-xr-x   6 consultadd  staff    192 Nov  5 00:32 venv
+
+
+ls -la services
+drwxr-xr-x   9 consultadd  staff    288 Nov  5 01:29 .
+drwxr-xr-x  13 consultadd  staff    416 Nov  5 02:54 ..
+-rw-r--r--@  1 consultadd  staff  10244 Nov  4 20:22 .DS_Store
+drwxr-xr-x  12 consultadd  staff    384 Nov  5 00:31 pdf-extraction-service
+drwxr-xr-x   2 consultadd  staff     64 Nov  4 20:21 report-service
+drwxr-xr-x   6 consultadd  staff    192 Nov  5 01:46 shared
+drwxr-xr-x   8 consultadd  staff    256 Nov  5 02:35 tax-data-service
+drwxr-xr-x   8 consultadd  staff    256 Nov  5 01:17 tax-planning-service
+drwxr-xr-x   2 consultadd  staff     64 Nov  4 20:20 validation-service
+
+
+ls -la services/shared
+drwxr-xr-x  6 consultadd  staff   192 Nov  5 01:46 .
+drwxr-xr-x  9 consultadd  staff   288 Nov  5 01:29 ..
+-rw-r--r--  1 consultadd  staff   405 Nov  5 01:31 __init__.py
+drwxr-xr-x  5 consultadd  staff   160 Nov  5 02:22 __pycache__
+-rw-r--r--  1 consultadd  staff  3483 Nov  5 01:45 database.py
+-rw-r--r--@ 1 consultadd  staff  4048 Nov  5 02:22 db_models.py
+
+
+ls -la services/tax-data-service
+total 64
+drwxr-xr-x  8 consultadd  staff    256 Nov  5 02:35 .
+drwxr-xr-x  9 consultadd  staff    288 Nov  5 01:29 ..
+-rw-r--r--  1 consultadd  staff    121 Nov  4 20:57 .env
+-rw-r--r--  1 consultadd  staff    198 Nov  4 20:51 Dockerfile
+drwxr-xr-x  5 consultadd  staff    160 Nov  5 02:36 __pycache__
+-rw-r--r--  1 consultadd  staff   3063 Nov  5 02:35 logging_config.py
+-rw-r--r--  1 consultadd  staff  12790 Nov  5 02:36 main.py
+-rw-r--r--  1 consultadd  staff     71 Nov  5 02:33 requirements.txt

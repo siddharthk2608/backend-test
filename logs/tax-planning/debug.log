@@ -1,0 +1,91 @@
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 01:17:02 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 01:17:02 | tax-planning | INFO     | main.py:742 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 01:17:29 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 01:17:29 | tax-planning | INFO     | main.py:742 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 01:18:02 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 01:18:02 | tax-planning | INFO     | main.py:742 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 01:18:20 | tax-planning | DEBUG    | main.py:715 | health_check() | Health check requested
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:23:17 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:23:17 | tax-planning | INFO     | main.py:817 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 02:23:17 | tax-planning | INFO     | main.py:58 | startup_event() | Starting up Tax Planning Service...
+2025-11-05 02:23:17 | tax-planning | INFO     | main.py:60 | startup_event() | Database connected successfully
+2025-11-05 02:23:58 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 02:30:34 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 02:31:05 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 02:32:52 | tax-planning | INFO     | main.py:66 | shutdown_event() | Shutting down Tax Planning Service...
+2025-11-05 02:32:52 | tax-planning | INFO     | main.py:68 | shutdown_event() | Database connection closed
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:33:01 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:33:01 | tax-planning | INFO     | main.py:817 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 02:33:01 | tax-planning | INFO     | main.py:58 | startup_event() | Starting up Tax Planning Service...
+2025-11-05 02:33:01 | tax-planning | INFO     | main.py:60 | startup_event() | Database connected successfully
+2025-11-05 02:33:16 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 02:36:13 | tax-planning | INFO     | main.py:66 | shutdown_event() | Shutting down Tax Planning Service...
+2025-11-05 02:36:13 | tax-planning | INFO     | main.py:68 | shutdown_event() | Database connection closed
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:36:20 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:36:20 | tax-planning | INFO     | main.py:817 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 02:36:20 | tax-planning | INFO     | main.py:58 | startup_event() | Starting up Tax Planning Service...
+2025-11-05 02:36:20 | tax-planning | INFO     | main.py:60 | startup_event() | Database connected successfully
+2025-11-05 02:38:08 | tax-planning | INFO     | main.py:66 | shutdown_event() | Shutting down Tax Planning Service...
+2025-11-05 02:38:08 | tax-planning | INFO     | main.py:68 | shutdown_event() | Database connection closed
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:40:03 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:40:03 | tax-planning | INFO     | main.py:817 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 02:40:03 | tax-planning | INFO     | main.py:58 | startup_event() | Starting up Tax Planning Service...
+2025-11-05 02:40:03 | tax-planning | INFO     | main.py:60 | startup_event() | Database connected successfully
+2025-11-05 02:40:48 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:91 | setup_logger() | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 03:15:40 | tax-planning | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 03:15:40 | tax-planning | INFO     | main.py:817 | <module>() | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+2025-11-05 03:15:40 | tax-planning | INFO     | main.py:58 | startup_event() | Starting up Tax Planning Service...
+2025-11-05 03:15:40 | tax-planning | INFO     | main.py:60 | startup_event() | Database connected successfully
+2025-11-05 03:15:40 | tax-planning | INFO     | main.py:66 | shutdown_event() | Shutting down Tax Planning Service...
+2025-11-05 03:15:40 | tax-planning | INFO     | main.py:68 | shutdown_event() | Database connection closed
+2025-11-05 03:15:43 | tax-planning | DEBUG    | main.py:790 | health_check() | Health check requested
+2025-11-05 03:15:51 | tax-planning | INFO     | main.py:66 | shutdown_event() | Shutting down Tax Planning Service...
+2025-11-05 03:15:51 | tax-planning | INFO     | main.py:68 | shutdown_event() | Database connection closed

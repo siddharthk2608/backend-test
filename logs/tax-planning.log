@@ -1,0 +1,35 @@
+2025-11-05 03:15:40 | INFO     | ================================================================================
+2025-11-05 03:15:40 | INFO     | TAX-PLANNING SERVICE LOGGING INITIALIZED
+2025-11-05 03:15:40 | INFO     | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-planning
+2025-11-05 03:15:40 | INFO     | Log Level: INFO
+2025-11-05 03:15:40 | INFO     | Console Output: True
+2025-11-05 03:15:40 | INFO     | Debug Logs: True
+2025-11-05 03:15:40 | INFO     | ================================================================================
+/Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/services/tax-planning-service/main.py:55: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+/Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/services/tax-planning-service/main.py:63: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("shutdown")
+2025-11-05 03:15:40 | INFO     | Starting Tax Planning Service with Gemini Flash 2.5 on port 8001...
+INFO:     Started server process [25049]
+INFO:     Waiting for application startup.
+2025-11-05 03:15:40 | INFO     | Starting up Tax Planning Service...
+2025-11-05 03:15:40 | INFO     | Database connected successfully
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('0.0.0.0', 8001): address already in use
+INFO:     Waiting for application shutdowINFO:     127.0.0.1:59171 - "GET /api/v1/planning/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-05 03:15:51 | INFO     | Shutting down Tax Planning Service...
+2025-11-05 03:15:51 | INFO     | Database connection closed
+INFO:     Application shutdown complete.
+INFO:     Finished server process [21201]

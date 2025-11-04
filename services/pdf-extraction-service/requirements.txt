@@ -1,0 +1,9 @@
+# requirements.txt
+fastapi
+uvicorn
+python-multipart
+pydantic
+PyPDF2
+pdfplumber
+google-generativeai
+python-dotenv

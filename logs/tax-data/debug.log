@@ -1,0 +1,60 @@
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:141 | setup_logger() | ================================================================================
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:142 | setup_logger() | TAX-DATA SERVICE LOGGING INITIALIZED
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:143 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-data
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:144 | setup_logger() | Log Level: INFO
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:145 | setup_logger() | Console Output: True
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:146 | setup_logger() | Debug Logs: True
+2025-11-05 02:22:30 | tax-data | INFO     | logging_config.py:147 | setup_logger() | ================================================================================
+2025-11-05 02:22:30 | tax-data | INFO     | main.py:410 | <module>() | Starting Tax Data Service on port 8002...
+2025-11-05 02:22:30 | tax-data | INFO     | main.py:57 | startup_event() | Starting up Tax Data Service...
+2025-11-05 02:22:30 | tax-data | INFO     | main.py:59 | startup_event() | Database connected successfully
+2025-11-05 02:22:39 | tax-data | INFO     | main.py:65 | shutdown_event() | Shutting down Tax Data Service...
+2025-11-05 02:22:39 | tax-data | INFO     | main.py:67 | shutdown_event() | Database connection closed
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:141 | setup_logger() | ================================================================================
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:142 | setup_logger() | TAX-DATA SERVICE LOGGING INITIALIZED
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:143 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-data
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:144 | setup_logger() | Log Level: INFO
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:145 | setup_logger() | Console Output: True
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:146 | setup_logger() | Debug Logs: True
+2025-11-05 02:23:19 | tax-data | INFO     | logging_config.py:147 | setup_logger() | ================================================================================
+2025-11-05 02:23:19 | tax-data | INFO     | main.py:410 | <module>() | Starting Tax Data Service on port 8002...
+2025-11-05 02:23:19 | tax-data | INFO     | main.py:57 | startup_event() | Starting up Tax Data Service...
+2025-11-05 02:23:19 | tax-data | INFO     | main.py:59 | startup_event() | Database connected successfully
+2025-11-05 02:32:52 | tax-data | INFO     | main.py:65 | shutdown_event() | Shutting down Tax Data Service...
+2025-11-05 02:32:52 | tax-data | INFO     | main.py:67 | shutdown_event() | Database connection closed
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:91 | setup_logger() | TAX-DATA SERVICE LOGGING INITIALIZED
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-data
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:36:22 | tax-data | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:36:22 | tax-data | INFO     | main.py:410 | <module>() | Starting Tax Data Service on port 8002...
+2025-11-05 02:36:22 | tax-data | INFO     | main.py:57 | startup_event() | Starting up Tax Data Service...
+2025-11-05 02:36:22 | tax-data | INFO     | main.py:59 | startup_event() | Database connected successfully
+2025-11-05 02:38:08 | tax-data | INFO     | main.py:65 | shutdown_event() | Shutting down Tax Data Service...
+2025-11-05 02:38:08 | tax-data | INFO     | main.py:67 | shutdown_event() | Database connection closed
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:91 | setup_logger() | TAX-DATA SERVICE LOGGING INITIALIZED
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-data
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 02:40:05 | tax-data | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 02:40:05 | tax-data | INFO     | main.py:410 | <module>() | Starting Tax Data Service on port 8002...
+2025-11-05 02:40:05 | tax-data | INFO     | main.py:57 | startup_event() | Starting up Tax Data Service...
+2025-11-05 02:40:05 | tax-data | INFO     | main.py:59 | startup_event() | Database connected successfully
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:90 | setup_logger() | ================================================================================
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:91 | setup_logger() | TAX-DATA SERVICE LOGGING INITIALIZED
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:92 | setup_logger() | Log Directory: /Users/consultadd/Desktop/project/POCs/accounting-biz-taxplanner/logs/tax-data
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:93 | setup_logger() | Log Level: INFO
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:94 | setup_logger() | Console Output: True
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:95 | setup_logger() | Debug Logs: True
+2025-11-05 03:15:42 | tax-data | INFO     | logging_config.py:96 | setup_logger() | ================================================================================
+2025-11-05 03:15:42 | tax-data | INFO     | main.py:410 | <module>() | Starting Tax Data Service on port 8002...
+2025-11-05 03:15:42 | tax-data | INFO     | main.py:57 | startup_event() | Starting up Tax Data Service...
+2025-11-05 03:15:42 | tax-data | INFO     | main.py:59 | startup_event() | Database connected successfully
+2025-11-05 03:15:42 | tax-data | INFO     | main.py:65 | shutdown_event() | Shutting down Tax Data Service...
+2025-11-05 03:15:42 | tax-data | INFO     | main.py:67 | shutdown_event() | Database connection closed
+2025-11-05 03:15:51 | tax-data | INFO     | main.py:65 | shutdown_event() | Shutting down Tax Data Service...
+2025-11-05 03:15:51 | tax-data | INFO     | main.py:67 | shutdown_event() | Database connection closed

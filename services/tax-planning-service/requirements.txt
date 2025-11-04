@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+anthropic
+python-dotenv==1.0.0
+httpx
+sqlalchemy
+psycopg2-binary
+redis
+logger_config
+arrow
+motor
