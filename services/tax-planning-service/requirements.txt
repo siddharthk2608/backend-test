@@ -10,3 +10,4 @@ redis
 logger_config
 arrow
 motor
+google-generativeai

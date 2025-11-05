@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     """Application settings"""
     
     # API Keys
-    google_api_key: str  # Changed from anthropic_api_key
+    google_api_key: str  # Changed from GEMINI_API_KEY
     
     # Application settings
     app_name: str = "Tax Return PDF Processor"
